@@ -2,6 +2,7 @@
 bigdata_global_renewable_dataset_ji/
 bigdata_cyclone_iris/
 bigdata_landslide_wb/
+bigdata_heat_wb/
 
 # outputs
 output_global/

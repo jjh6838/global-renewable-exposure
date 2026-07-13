@@ -1,8 +1,6 @@
-# To ssh oxford from VS code:
+# To ssh OUCE cluster from VS code
 
-Open VS Code normally using its Windows icon. Then:
-
-Press Ctrl+Shift+P.
+Open VS Code and press Ctrl+Shift+P.
 Select Remote-SSH: Connect to Host…
 Choose:
 ouce-hn02.ouce.ox.ac.uk
@@ -10,8 +8,11 @@ Enter your cluster password if requested.
 Open:
 /home/lina4376/dphil_p2/p2_test
 
+OR?
 (p1_etl) PS Z:\dphil_p2\p2_test> ssh lina4376@ouce-hn02.ouce.ox.ac.uk
 
+# Within OUCE cluster, you can do git directly as git is authenticated in OUCE cluster. 
+# However, Within VS code, after ssh OUCE cluster, you need to check whether git is possible or not. There was an issue on the cluster side (no tmp file space for the time being)
 
 # p2_test: Country Exposure Run (Slurm)
 

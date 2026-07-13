@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import geopandas as gpd
+import pyarrow.parquet as pq
 import rasterio
 from pyproj import Transformer
 from rasterio.windows import from_bounds
@@ -50,14 +50,25 @@ def parse_args() -> argparse.Namespace:
 
 
 def get_country_bounds_wgs84(country_file: Path) -> tuple[float, float, float, float]:
-    gdf = gpd.read_parquet(country_file)
-    if gdf.empty:
-        raise ValueError(f"No features found in {country_file}")
-    if gdf.crs is None:
-        gdf = gdf.set_crs("EPSG:4326", allow_override=True)
-    gdf_wgs84 = gdf.to_crs("EPSG:4326")
-    min_x, min_y, max_x, max_y = gdf_wgs84.total_bounds
-    return float(min_x), float(min_y), float(max_x), float(max_y)
+    meta = pq.read_metadata(country_file)
+    geo_meta = (meta.metadata or {}).get(b"geo")
+    if not geo_meta:
+        raise ValueError(f"No GeoParquet metadata found in {country_file}")
+
+    import json
+
+    geo = json.loads(geo_meta.decode("utf-8"))
+    # GeoParquet bbox is [minx, miny, maxx, maxy] in the geometry CRS.
+    if "columns" not in geo:
+        raise ValueError(f"Malformed GeoParquet metadata in {country_file}")
+
+    # Use the first geometry column entry.
+    geom_info = next(iter(geo["columns"].values()))
+    bbox = geom_info.get("bbox")
+    if not bbox or len(bbox) != 4:
+        raise ValueError(f"Missing bbox metadata in {country_file}")
+
+    return float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])
 
 
 def extract_country_raster(
@@ -75,6 +86,16 @@ def extract_country_raster(
     top = max(min_y, max_y)
 
     window = from_bounds(left, bottom, right, top, src.transform)
+    window = window.round_offsets().round_lengths()
+    if window.width <= 0 or window.height <= 0:
+        raise ValueError("Computed raster window has non-positive dimensions")
+
+    pixel_count = int(window.width * window.height)
+    if pixel_count > 500_000_000:
+        raise MemoryError(
+            f"Requested window is too large ({pixel_count:,} pixels), refusing to read into memory"
+        )
+
     data = src.read(window=window)
     transform = src.window_transform(window)
 
@@ -110,16 +131,24 @@ def main() -> None:
 
     with rasterio.open(flood_path) as src:
         transformer = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
-        for iso3 in tqdm(countries, desc="Processing countries", unit="country"):
+        pbar = tqdm(countries, desc="Processing countries", unit="country", dynamic_ncols=True)
+        for iso3 in pbar:
             country_file = input_dir / f"polylines_{iso3}_add_v2_exposure.parquet"
             if not country_file.exists():
-                print(f"Skipping {iso3}: missing {country_file.name}")
+                pbar.write(f"Skipping {iso3}: missing {country_file.name}")
                 continue
 
-            bbox_wgs84 = get_country_bounds_wgs84(country_file)
-            output_path = output_dir / f"flood_q100_{iso3}_bbox.tif"
-            extract_country_raster(src, transformer, bbox_wgs84, output_path)
-            print(f"Created {iso3}: {output_path}")
+            try:
+                bbox_wgs84 = get_country_bounds_wgs84(country_file)
+                output_path = output_dir / f"flood_q100_{iso3}_bbox.tif"
+                extract_country_raster(src, transformer, bbox_wgs84, output_path)
+                pbar.write(f"Created {iso3}: {output_path}")
+            except MemoryError as exc:
+                pbar.write(f"Failed {iso3}: {exc}")
+                raise
+            except Exception as exc:  # noqa: BLE001
+                pbar.write(f"Failed {iso3}: {exc}")
+                raise
 
 
 if __name__ == "__main__":

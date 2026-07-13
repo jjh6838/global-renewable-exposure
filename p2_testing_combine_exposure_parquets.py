@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import re
 
 import geopandas as gpd
 import pandas as pd
+
+
+ISO3_FILENAME_RE = re.compile(r"^polylines_([A-Za-z0-9]{3})_.*$")
 
 
 def parse_args() -> argparse.Namespace:
@@ -38,11 +42,24 @@ def parse_args() -> argparse.Namespace:
         help="Glob pattern for parquet files inside --input-dir.",
     )
     parser.add_argument(
+        "--countries",
+        nargs="+",
+        default=None,
+        help="Optional ISO3 country codes to include (space-separated), e.g. --countries KOR JPN GBR.",
+    )
+    parser.add_argument(
         "--no-overwrite",
         action="store_true",
         help="Fail if the output GeoPackage already exists.",
     )
     return parser.parse_args()
+
+
+def iso3_from_path(file_path: Path) -> str | None:
+    match = ISO3_FILENAME_RE.match(file_path.stem)
+    if not match:
+        return None
+    return match.group(1).upper()
 
 
 def ensure_iso3_column(gdf: gpd.GeoDataFrame, file_path: Path) -> gpd.GeoDataFrame:
@@ -73,6 +90,28 @@ def main() -> None:
         raise FileNotFoundError(
             f"No parquet files found in {input_dir} matching pattern '{args.pattern}'."
         )
+
+    if args.countries:
+        selected_iso3 = {c.upper() for c in args.countries}
+        filtered_files: list[Path] = []
+        unknown_files = 0
+        for fp in parquet_files:
+            iso3 = iso3_from_path(fp)
+            if iso3 is None:
+                unknown_files += 1
+                continue
+            if iso3 in selected_iso3:
+                filtered_files.append(fp)
+
+        parquet_files = filtered_files
+        if not parquet_files:
+            raise FileNotFoundError(
+                f"No parquet files found for selected countries {sorted(selected_iso3)} in {input_dir}."
+            )
+
+        print(f"Country filter active: {sorted(selected_iso3)}")
+        if unknown_files:
+            print(f"Skipped {unknown_files} file(s) with unrecognized filename format.")
 
     print(f"Found {len(parquet_files)} parquet file(s).")
 

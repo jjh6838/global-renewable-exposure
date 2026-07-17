@@ -1,14 +1,16 @@
 name: p2_etl
 channels:
   - conda-forge
-  - defaults
 dependencies:
   - python=3.12
   - pip
   - numpy
   - pandas
+  - geopandas
+  - pyarrow
   - rasterio
   - xarray
   - netcdf4
   - h5netcdf
   - requests
+  - cdsapi

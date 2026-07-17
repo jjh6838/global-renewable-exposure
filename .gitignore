@@ -1,10 +1,17 @@
+# config
+__pycache__/
+.github/
+.venv/
+.vscode/
+
+
 # bigdata sources:
-bigdata_global_renewable_dataset_ji/
-bigdata_cyclone_iris/
-bigdata_landslide_wb/
-bigdata_heat_wb/
+bigdata_heat_wb_unused/
 
 # outputs
 output_global/
 output_per_country/
+
+# logs
+logs/
 

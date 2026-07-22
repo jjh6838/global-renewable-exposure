@@ -6,6 +6,8 @@ This README documents only the production scripts in this workspace:
 - p2_b_process_download_cyclonetides_isimip.sh
 - p2_c_download_riverflood_jrc.py
 - p2_d_process_download_riverflood_jrc.sh
+- p2_e_download_heat_era5land.py
+- p2_f_process_download_heat_era5land.sh
 - p2_g_extract_cyclone_iris_nc_to_tif.py
 - p2_h_process_extract_cyclone_iris_nc_to_tif.sh
 - p2_i_analyze_facilities_exposure.py
@@ -56,32 +58,78 @@ Examples:
 ```
 
 Main output root:
-## p2_e and p2_f: ERA5-Land heat download
+## p2_e and p2_f: ERA5-Land heat download and global maps
 
 Script pair:
 
+- p2_e_download_heat_era5land.py
+- p2_f_process_download_heat_era5land.sh
+
 Purpose:
 
+- Download ERA5-Land daily-maximum 2 m temperature (1995–2024) month-by-month via CDS API
+- Convert Kelvin → Celsius and compute yearly exceedance-day maps for thresholds 30/35/40 °C
+- Compute climatological mean days/year over 1995–2024 for each threshold
 
-- --year YYYY (repeatable)
-- --month MM (repeatable)
+Both steps live in a single Python script (`p2_e`). The Slurm wrapper (`p2_f`) calls it twice — once for download, once for global maps — unless a mode flag is given.
 
-Prompt/CLI behavior in p2_f:
+Key options for p2_e:
 
-- Accepts positional arguments: <YEAR> [MONTH]
-- If no month and Slurm array ID exists, uses SLURM_ARRAY_TASK_ID as month
-- If YEAR is missing in an interactive shell, prompts: Enter year (YYYY)
+- `--year YYYY` (repeatable) — year(s) to download; defaults to all 1995–2024
+- `--month MM` (repeatable) — month(s) to download; defaults to all 01–12
+- `--write-global` — skip downloading; write global maps from existing NC files
 
-python p2_e_download_heat_era5land.py
-python p2_e_download_heat_era5land.py --year 2024 --month 07
-python p2_e_download_heat_era5land.py --year 2023 --year 2024 --month 06 --month 07
+Prompt/CLI behaviour in p2_f:
 
-sbatch p2_f_process_download_heat_era5land.sh 2024 07
-sbatch p2_f_process_download_heat_era5land.sh 2024
-sbatch --array=1-12%5 p2_f_process_download_heat_era5land.sh 2024
+- Accepts positional arguments: `<YEAR> [MONTH]`
+- If no month and a Slurm array ID exists, uses `SLURM_ARRAY_TASK_ID` as month
+- If YEAR is missing in an interactive shell, prompts: `Enter year (YYYY)`
+
+Mode flags for p2_f:
+
+- *(no flag)*: download the requested year/month, then write global maps
+- `--write-global`: skip downloading; write global maps from existing files only
+- `--download-only`: download only; do not write global maps
+
+Output layout:
+
+```
+/soge-home/projects/mistral/ji/bigdata_heat_era5land/
+  raw_nc/<YEAR>/era5land_dailymax_t2m_<YEAR>_<MM>.nc
+  manifests/download_manifest[_<suffix>].json
+  global_maps/exceedance_days/heat_exceedance_{30|35|40}C_<YEAR>.tif
+  global_maps/climatology/heat_clim_mean_exceedance_{30|35|40}C_1995_2024.tif
 ```
 
- Per-country output dir: output_per_country/parquet_centroids_exposure
+Examples:
+
+```bash
+# Download a single month
+python p2_e_download_heat_era5land.py --year 2024 --month 07
+
+# Download multiple years/months
+python p2_e_download_heat_era5land.py --year 2023 --year 2024 --month 06 --month 07
+
+# Write global maps only (no download)
+python p2_e_download_heat_era5land.py --write-global
+
+# Slurm: download one month then write global maps
+sbatch p2_f_process_download_heat_era5land.sh 2024 07
+
+# Slurm: download all months of a year then write global maps
+sbatch p2_f_process_download_heat_era5land.sh 2024
+
+# Slurm: download all months as array then write global maps
+sbatch --array=1-12%5 p2_f_process_download_heat_era5land.sh 2024
+
+# Slurm: write global maps only (all downloads already done)
+sbatch p2_f_process_download_heat_era5land.sh --write-global
+
+# Slurm: download only, skip global maps
+sbatch p2_f_process_download_heat_era5land.sh --download-only 2024 07
+```
+
+Main output root:
 
 - /soge-home/projects/mistral/ji/bigdata_heat_era5land
 
@@ -127,7 +175,7 @@ Main output path:
 
 - /soge-home/projects/mistral/ji/bigdata_cyclone_iris/global_maps
 
-## p2_i and p2_j: Cyclone exposure analysis (facilities)
+## p2_i and p2_j: Cyclone and riverflood exposure analysis (facilities)
 
 Script pair:
 
@@ -137,24 +185,46 @@ Script pair:
 Purpose:
 
 - Overlay IRIS cyclone RP rasters with facilities parquet files
+- Overlay JRC riverflood RP depth rasters with facilities parquet files
 - Write per-country exposure parquet outputs as facilities_<ISO3>_exposure.parquet
 - Exposure threshold: wind speed >= 33 m/s
+- Riverflood threshold: depth >= 2.0 m
 
 Output exposure columns in p2_i:
 
 - exposed_cyclone_rp10
 - exposed_cyclone_rp100
 - exposed_cyclone_rp500
+- exposed_riverflood_rp10
+- exposed_riverflood_rp100
+- exposed_riverflood_rp500
+- exposed_heat_30c
+- exposed_heat_35c
+- exposed_heat_40c
 
 Key options for p2_i:
 
 - --hazard-dir PATH
+- --riverflood-dir PATH
+- --heat-dir PATH
 - --facilities-dir PATH
 - --output-dir PATH
 - --global-output PATH (default: output_global/facilities_global_exposure.gpkg)
 - --rps 10 100 500
+- --riverflood-rps 10 100 500
+- --heat-thresholds-c 30 35 40
+- --riverflood-threshold-m 2.0
+- --heat-threshold-days 30.0
 - --iso3 ISO3 [ISO3 ...]
 - --write-global / --no-write-global
+
+Default riverflood source in p2_i:
+
+- /soge-home/projects/mistral/ji/bigdata_riverflood_jrc/global_maps
+
+Default heat source in p2_i:
+
+- /soge-home/projects/mistral/ji/bigdata_heat_era5land/global_maps/climatology
 
 Examples for p2_i:
 
@@ -177,6 +247,7 @@ Tiered Slurm behavior in p2_j:
 - Default with no `--iso3`: submits tiered global arrays.
 - --submit-tiered: build tier country lists and submit 3 Slurm arrays
 - --iso3 ISO3: one-country direct run
+- `--heat-dir`, `--heat-thresholds-c`, and `--heat-threshold-days` are available and passed through to `p2_i`.
 - --write-global / --no-write-global are available (`--write-global` is optional).
 - Array worker mode uses --tier and --country-list-file
 
@@ -215,6 +286,8 @@ sbatch p2_j_process_analyze_facilities_exposure.sh --write-global
 Notes for p2_j Slurm behavior:
 
 - `bash p2_j_process_analyze_facilities_exposure.sh` is a submit command. It does not process all countries in the current shell; it internally issues `sbatch` submissions for tiered Slurm array jobs.
+- Those array jobs are then scheduled by Slurm and can run in parallel up to each array concurrency cap (`%N`) and available cluster resources.
+- In contrast, `sbatch p2_j_process_analyze_facilities_exposure.sh --iso3 XXX` submits one worker job for one country only.
 - You can verify submitted jobs with `squeue -u lina4376`.
 
 About `output_global/slurm_country_lists_facilities/`:
@@ -224,7 +297,7 @@ About `output_global/slurm_country_lists_facilities/`:
 - You do not need to create it manually.
 - If deleted, it will be recreated on the next p2_j tiered submission.
 
-## p2_k and p2_l: Cyclone exposure analysis (centroids)
+## p2_k and p2_l: Cyclone and riverflood exposure analysis (centroids)
 
 Script pair:
 
@@ -234,18 +307,28 @@ Script pair:
 Purpose:
 
 - Overlay IRIS cyclone RP rasters with centroids parquet files
+- Overlay JRC riverflood RP depth rasters with centroids parquet files
 - Write per-country centroid exposure parquet outputs
 - Exposure threshold: wind speed >= 33 m/s
+- Riverflood threshold: depth >= 2.0 m
 
 Output exposure columns in p2_k:
 
 - exposed_cyclone_rp10
 - exposed_cyclone_rp100
 - exposed_cyclone_rp500
+- exposed_riverflood_rp10
+- exposed_riverflood_rp100
+- exposed_riverflood_rp500
+- exposed_heat_30c
+- exposed_heat_35c
+- exposed_heat_40c
 
 Default paths in p2_k:
 
 - Input centroids dir: /soge-home/projects/mistral/ji/bigdata_global_renewable_dataset_p1/2050_supply_100%_add_v2
+- Riverflood maps dir: /soge-home/projects/mistral/ji/bigdata_riverflood_jrc/global_maps
+- Heat maps dir: /soge-home/projects/mistral/ji/bigdata_heat_era5land/global_maps/climatology
 - Per-country output dir: output_per_country/parquet_centroids_exposure
 - Global output: output_global/centroids_global_exposure.gpkg (layer: centroids_global_exposure)
 
@@ -260,6 +343,7 @@ Tiered Slurm behavior in p2_l:
 
 - Default with no `--iso3`: submits tiered global arrays.
 - `--iso3 ISO3`: runs a single country (RPs 10/100/500 together by default).
+- `--heat-dir`, `--heat-thresholds-c`, and `--heat-threshold-days` are available and passed through to `p2_k`.
 - `--write-global` / `--no-write-global` are available (`--write-global` is optional).
 
 Global output behavior in p2_l:
@@ -285,6 +369,8 @@ sbatch p2_l_process_analyze_centroids_exposure.sh --write-global
 Notes for p2_l Slurm behavior:
 
 - `bash p2_l_process_analyze_centroids_exposure.sh` is a submit command. It does not process all countries in the current shell; it internally issues `sbatch` submissions for tiered Slurm array jobs.
+- Those array jobs are then scheduled by Slurm and can run in parallel up to each array concurrency cap (`%N`) and available cluster resources.
+- In contrast, `sbatch p2_l_process_analyze_centroids_exposure.sh --iso3 XXX` submits one worker job for one country only.
 - You can verify submitted jobs with `squeue -u lina4376`.
 
 About `output_global/slurm_country_lists_centroids/`:
@@ -294,7 +380,7 @@ About `output_global/slurm_country_lists_centroids/`:
 - You do not need to create it manually.
 - If deleted, it will be recreated on the next tiered submission.
 
-## p2_m and p2_n: Cyclone exposure analysis (polylines)
+## p2_m and p2_n: Cyclone and riverflood exposure analysis (polylines)
 
 Script pair:
 
@@ -304,18 +390,28 @@ Script pair:
 Purpose:
 
 - Overlay IRIS cyclone RP rasters with polyline parquet files
+- Overlay JRC riverflood RP depth rasters with polyline parquet files
 - Write per-country polyline exposure parquet outputs
 - Exposure threshold: wind speed >= 33 m/s
+- Riverflood threshold: depth >= 2.0 m
 
 Output exposure columns in p2_m:
 
 - exposed_cyclone_rp10
 - exposed_cyclone_rp100
 - exposed_cyclone_rp500
+- exposed_riverflood_rp10
+- exposed_riverflood_rp100
+- exposed_riverflood_rp500
+- exposed_heat_30c
+- exposed_heat_35c
+- exposed_heat_40c
 
 Default paths in p2_m:
 
 - Input polylines dir: /soge-home/projects/mistral/ji/bigdata_global_renewable_dataset_p1/2050_supply_100%_add_v2
+- Riverflood maps dir: /soge-home/projects/mistral/ji/bigdata_riverflood_jrc/global_maps
+- Heat maps dir: /soge-home/projects/mistral/ji/bigdata_heat_era5land/global_maps/climatology
 - Per-country output dir: output_per_country/parquet_polylines_exposure
 - Global output: output_global/polylines_global_exposure.gpkg (layer: polylines_global_exposure)
 
@@ -323,6 +419,7 @@ Tiered Slurm behavior in p2_n:
 
 - Default with no `--iso3`: submits tiered global arrays.
 - `--iso3 ISO3`: runs a single country (RPs 10/100/500 together by default).
+- `--heat-dir`, `--heat-thresholds-c`, and `--heat-threshold-days` are available and passed through to `p2_m`.
 - `--write-global` / `--no-write-global` are available (`--write-global` is optional).
 
 Global output behavior in p2_n:
@@ -344,6 +441,13 @@ sbatch p2_n_process_analyze_polylines_exposure.sh --iso3 BGD
 # Submit global combine as a Slurm job (from existing per-country outputs)
 sbatch p2_n_process_analyze_polylines_exposure.sh --write-global
 ```
+
+Notes for p2_n Slurm behavior:
+
+- `bash p2_n_process_analyze_polylines_exposure.sh` is a submit command. It does not process all countries in the current shell; it internally issues `sbatch` submissions for tiered Slurm array jobs.
+- Those array jobs are then scheduled by Slurm and can run in parallel up to each array concurrency cap (`%N`) and available cluster resources.
+- In contrast, `sbatch p2_n_process_analyze_polylines_exposure.sh --iso3 XXX` submits one worker job for one country only.
+- You can verify submitted jobs with `squeue -u lina4376`.
 
 About `output_global/slurm_country_lists_polylines/`:
 

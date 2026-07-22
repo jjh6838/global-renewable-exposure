@@ -37,6 +37,9 @@ FINAL_OUTPUT_DIR=${SCRIPT_DIR}/output_per_country/parquet_centroids_exposure
 GLOBAL_OUTPUT=${SCRIPT_DIR}/output_global/centroids_global_exposure.gpkg
 CENTROIDS_DIR=/soge-home/projects/mistral/ji/bigdata_global_renewable_dataset_p1/2050_supply_100%_add_v2
 RPS=(10 100 500)
+HEAT_DIR=/soge-home/projects/mistral/ji/bigdata_heat_era5land/global_maps/climatology
+HEAT_THRESHOLDS_C=(30 35 40)
+HEAT_THRESHOLD_DAYS=30
 
 mkdir -p "$FINAL_OUTPUT_DIR"
 
@@ -73,6 +76,9 @@ Options:
   --tier <1|2|3>            Tier label (for worker metadata/logging)
   --country-list-file PATH  One ISO3 per line, used with SLURM_ARRAY_TASK_ID
   --iso3 ISO3               Run a single country immediately
+	--heat-dir PATH           Override heat climatology raster directory
+	--heat-thresholds-c ...   Override heat raster thresholds (default: 30 35 40)
+	--heat-threshold-days N   Override exposure cutoff in climatological days/year
 	--write-global            Build global GPKG from existing per-country outputs only
 										(optional; default is OFF)
 	--no-write-global         Disable global output (same as default)
@@ -109,6 +115,34 @@ while [[ $# -gt 0 ]]; do
 				exit 2
 			fi
 			ISO3_ARG="${2^^}"
+			shift 2
+			;;
+		--heat-dir)
+			if [[ $# -lt 2 ]]; then
+				echo "Missing value for --heat-dir" >&2
+				exit 2
+			fi
+			HEAT_DIR="$2"
+			shift 2
+			;;
+		--heat-thresholds-c)
+			shift
+			HEAT_THRESHOLDS_C=()
+			while [[ $# -gt 0 ]] && [[ ! "$1" =~ ^-- ]]; do
+				HEAT_THRESHOLDS_C+=("$1")
+				shift
+			done
+			if [[ ${#HEAT_THRESHOLDS_C[@]} -eq 0 ]]; then
+				echo "Missing value(s) for --heat-thresholds-c" >&2
+				exit 2
+			fi
+			;;
+		--heat-threshold-days)
+			if [[ $# -lt 2 ]]; then
+				echo "Missing value for --heat-threshold-days" >&2
+				exit 2
+			fi
+			HEAT_THRESHOLD_DAYS="$2"
 			shift 2
 			;;
 		--write-global)
@@ -171,7 +205,7 @@ collect_all_iso3s() {
 run_one_country() {
 	local iso3="$1"
 	local allow_global="${2:-1}"
-	local cmd=(python -u "$PY_SCRIPT" --iso3 "$iso3" --rps "${RPS[@]}" --output-dir "$FINAL_OUTPUT_DIR")
+	local cmd=(python -u "$PY_SCRIPT" --iso3 "$iso3" --rps "${RPS[@]}" --heat-dir "$HEAT_DIR" --heat-thresholds-c "${HEAT_THRESHOLDS_C[@]}" --heat-threshold-days "$HEAT_THRESHOLD_DAYS" --output-dir "$FINAL_OUTPUT_DIR")
 	if (( allow_global == 1 )) && (( WRITE_GLOBAL == 1 )); then
 		cmd+=(--write-global)
 	else

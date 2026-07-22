@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Overlay IRIS cyclone rasters with polyline GeoParquet by country.
+"""Overlay cyclone, riverflood, and heat rasters with polyline GeoParquet by country.
 
 For each polylines_{ISO3}_add_v2.parquet file, this script samples line
 geometries against IRIS RP rasters and writes country-level parquet output(s)
@@ -8,6 +8,9 @@ named polylines_{ISO3}_exposure.parquet with exposure fields:
 - exposed_cyclone_rp10
 - exposed_cyclone_rp100
 - exposed_cyclone_rp500
+- exposed_heat_30c
+- exposed_heat_35c
+- exposed_heat_40c
 
 Exposure is recorded as 1 when the maximum sampled IRIS wind speed along a
 polyline is >= 33 m/s, otherwise 0.
@@ -26,13 +29,19 @@ import rasterio
 
 
 DEFAULT_HAZARD_DIR = Path("/soge-home/projects/mistral/ji/bigdata_cyclone_iris/global_maps")
+DEFAULT_RIVERFLOOD_DIR = Path("/soge-home/projects/mistral/ji/bigdata_riverflood_jrc/global_maps")
+DEFAULT_HEAT_DIR = Path("/soge-home/projects/mistral/ji/bigdata_heat_era5land/global_maps/climatology")
 DEFAULT_POLYLINES_DIR = Path(
     "/soge-home/projects/mistral/ji/bigdata_global_renewable_dataset_p1/2050_supply_100%_add_v2"
 )
 DEFAULT_OUTPUT_DIR = Path("output_per_country/parquet_polylines_exposure")
 DEFAULT_GLOBAL_OUTPUT = Path("output_global/polylines_global_exposure.gpkg")
 DEFAULT_RPS = [10, 100, 500]
+DEFAULT_RIVERFLOOD_RPS = [10, 100, 500]
+DEFAULT_HEAT_THRESHOLDS_C = [30, 35, 40]
 WIND_EXPOSURE_THRESHOLD_MS = 33.0
+RIVERFLOOD_EXPOSURE_THRESHOLD_M = 2.0
+HEAT_EXPOSURE_THRESHOLD_DAYS = 30.0
 MAX_SAMPLES_PER_GEOMETRY = 21
 
 ISO3_RE = re.compile(r"^polylines_([A-Za-z0-9]{3})_add_v2\.parquet$")
@@ -55,6 +64,18 @@ def parse_args() -> argparse.Namespace:
         help="Directory containing polylines_{ISO3}_add_v2.parquet files",
     )
     parser.add_argument(
+        "--riverflood-dir",
+        type=Path,
+        default=DEFAULT_RIVERFLOOD_DIR,
+        help="Directory containing RP*_depth_global.tif maps",
+    )
+    parser.add_argument(
+        "--heat-dir",
+        type=Path,
+        default=DEFAULT_HEAT_DIR,
+        help="Directory containing heat_clim_mean_exceedance_*C_1995_2024.tif maps",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=DEFAULT_OUTPUT_DIR,
@@ -72,6 +93,32 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         default=DEFAULT_RPS,
         help="Return periods to evaluate (space-separated)",
+    )
+    parser.add_argument(
+        "--riverflood-rps",
+        type=int,
+        nargs="+",
+        default=DEFAULT_RIVERFLOOD_RPS,
+        help="Riverflood return periods to evaluate (space-separated)",
+    )
+    parser.add_argument(
+        "--heat-thresholds-c",
+        type=int,
+        nargs="+",
+        default=DEFAULT_HEAT_THRESHOLDS_C,
+        help="Heat exceedance thresholds in Celsius to evaluate (space-separated)",
+    )
+    parser.add_argument(
+        "--riverflood-threshold-m",
+        type=float,
+        default=RIVERFLOOD_EXPOSURE_THRESHOLD_M,
+        help="Exposure threshold for riverflood depth in meters (greater-than-or-equal)",
+    )
+    parser.add_argument(
+        "--heat-threshold-days",
+        type=float,
+        default=HEAT_EXPOSURE_THRESHOLD_DAYS,
+        help="Exposure threshold for climatological heat exceedance days/year (greater-than-or-equal)",
     )
     parser.add_argument(
         "--iso3",
@@ -130,7 +177,7 @@ def find_country_files(polylines_dir: Path, iso3_filter: set[str] | None) -> lis
     return discovered
 
 
-def load_raster_paths(hazard_dir: Path, rps: list[int]) -> dict[int, Path]:
+def load_cyclone_raster_paths(hazard_dir: Path, rps: list[int]) -> dict[int, Path]:
     raster_paths: dict[int, Path] = {}
     missing: list[str] = []
     for rp in rps:
@@ -143,6 +190,40 @@ def load_raster_paths(hazard_dir: Path, rps: list[int]) -> dict[int, Path]:
     if missing:
         joined = "\n".join(missing)
         raise FileNotFoundError(f"Missing hazard rasters:\n{joined}")
+
+    return raster_paths
+
+
+def load_riverflood_raster_paths(riverflood_dir: Path, rps: list[int]) -> dict[int, Path]:
+    raster_paths: dict[int, Path] = {}
+    missing: list[str] = []
+    for rp in rps:
+        tif = riverflood_dir / f"RP{rp}_depth_global.tif"
+        if not tif.exists():
+            missing.append(str(tif))
+        else:
+            raster_paths[rp] = tif
+
+    if missing:
+        joined = "\n".join(missing)
+        raise FileNotFoundError(f"Missing riverflood rasters:\n{joined}")
+
+    return raster_paths
+
+
+def load_heat_raster_paths(heat_dir: Path, thresholds_c: list[int]) -> dict[int, Path]:
+    raster_paths: dict[int, Path] = {}
+    missing: list[str] = []
+    for threshold_c in thresholds_c:
+        tif = heat_dir / f"heat_clim_mean_exceedance_{threshold_c}C_1995_2024.tif"
+        if not tif.exists():
+            missing.append(str(tif))
+        else:
+            raster_paths[threshold_c] = tif
+
+    if missing:
+        joined = "\n".join(missing)
+        raise FileNotFoundError(f"Missing heat rasters:\n{joined}")
 
     return raster_paths
 
@@ -233,11 +314,73 @@ def sample_exposure_for_rp(gdf: gpd.GeoDataFrame, raster_path: Path) -> np.ndarr
         return result
 
 
+def sample_riverflood_exposure_for_rp(
+    gdf: gpd.GeoDataFrame,
+    raster_path: Path,
+    threshold_m: float,
+) -> np.ndarray:
+    with rasterio.open(raster_path) as src:
+        if gdf.crs is None:
+            raise ValueError("Input polyline data has no CRS metadata")
+
+        gdf_in_raster_crs = gdf.to_crs(src.crs)
+        result = np.zeros(len(gdf_in_raster_crs), dtype=np.uint8)
+
+        for idx, geom in enumerate(gdf_in_raster_crs.geometry):
+            if geom is None or geom.is_empty:
+                continue
+
+            coords = _coords_for_geometry(geom)
+            if not coords:
+                continue
+
+            sampled = np.array([row[0] for row in src.sample(coords)], dtype=np.float32)
+            max_value = _max_valid_sample_value(sampled, src.nodata)
+
+            if not np.isnan(max_value) and max_value >= threshold_m:
+                result[idx] = 1
+
+        return result
+
+
+def sample_heat_exposure_for_threshold(
+    gdf: gpd.GeoDataFrame,
+    raster_path: Path,
+    threshold_days: float,
+) -> np.ndarray:
+    with rasterio.open(raster_path) as src:
+        if gdf.crs is None:
+            raise ValueError("Input polyline data has no CRS metadata")
+
+        gdf_in_raster_crs = gdf.to_crs(src.crs)
+        result = np.zeros(len(gdf_in_raster_crs), dtype=np.uint8)
+
+        for idx, geom in enumerate(gdf_in_raster_crs.geometry):
+            if geom is None or geom.is_empty:
+                continue
+
+            coords = _coords_for_geometry(geom)
+            if not coords:
+                continue
+
+            sampled = np.array([row[0] for row in src.sample(coords)], dtype=np.float32)
+            max_value = _max_valid_sample_value(sampled, src.nodata)
+
+            if not np.isnan(max_value) and max_value >= threshold_days:
+                result[idx] = 1
+
+        return result
+
+
 def process_country(
     iso3: str,
     input_file: Path,
     output_dir: Path,
-    raster_paths: dict[int, Path],
+    cyclone_raster_paths: dict[int, Path],
+    riverflood_raster_paths: dict[int, Path],
+    heat_raster_paths: dict[int, Path],
+    riverflood_threshold_m: float,
+    heat_threshold_days: float,
 ) -> gpd.GeoDataFrame:
     gdf = gpd.read_parquet(input_file)
     if not isinstance(gdf, gpd.GeoDataFrame):
@@ -249,18 +392,36 @@ def process_country(
     gdf = gdf.copy()
     gdf["iso3"] = iso3
 
-    rp_cols: list[str] = []
-    for rp, raster_path in raster_paths.items():
+    exposure_cols: list[str] = []
+    for rp, raster_path in cyclone_raster_paths.items():
         col = f"exposed_cyclone_rp{rp}"
         gdf[col] = sample_exposure_for_rp(gdf, raster_path)
-        rp_cols.append(col)
+        exposure_cols.append(col)
+
+    for rp, raster_path in riverflood_raster_paths.items():
+        col = f"exposed_riverflood_rp{rp}"
+        gdf[col] = sample_riverflood_exposure_for_rp(
+            gdf,
+            raster_path,
+            threshold_m=riverflood_threshold_m,
+        )
+        exposure_cols.append(col)
+
+    for threshold_c, raster_path in heat_raster_paths.items():
+        col = f"exposed_heat_{threshold_c}c"
+        gdf[col] = sample_heat_exposure_for_threshold(
+            gdf,
+            raster_path,
+            threshold_days=heat_threshold_days,
+        )
+        exposure_cols.append(col)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     out_file = output_dir / f"polylines_{iso3}_exposure.parquet"
     gdf.to_parquet(out_file, index=False)
 
     total_assets = len(gdf)
-    exposure_summary = {col: int(gdf[col].sum()) for col in rp_cols}
+    exposure_summary = {col: int(gdf[col].sum()) for col in exposure_cols}
     print(
         f"Processed {iso3}: rows={total_assets}, exposed_by_rp={exposure_summary}, output={out_file}",
         flush=True,
@@ -308,24 +469,38 @@ def main() -> None:
         return
 
     hazard_dir = resolve_path(script_dir, args.hazard_dir)
+    riverflood_dir = resolve_path(script_dir, args.riverflood_dir)
+    heat_dir = resolve_path(script_dir, args.heat_dir)
     polylines_dir = resolve_path(script_dir, args.polylines_dir)
 
     iso3_filter = None if args.iso3 is None else {c.upper() for c in args.iso3}
 
     country_files = find_country_files(polylines_dir, iso3_filter)
-    raster_paths = load_raster_paths(hazard_dir, args.rps)
+    cyclone_raster_paths = load_cyclone_raster_paths(hazard_dir, args.rps)
+    riverflood_raster_paths = load_riverflood_raster_paths(riverflood_dir, args.riverflood_rps)
+    heat_raster_paths = load_heat_raster_paths(heat_dir, args.heat_thresholds_c)
 
     print(f"Hazard directory: {hazard_dir}", flush=True)
+    print(f"Riverflood directory: {riverflood_dir}", flush=True)
+    print(f"Heat directory: {heat_dir}", flush=True)
     print(f"Polylines directory: {polylines_dir}", flush=True)
     print(f"Countries to process: {len(country_files)}", flush=True)
-    print(f"RPs: {sorted(raster_paths.keys())}", flush=True)
+    print(f"Cyclone RPs: {sorted(cyclone_raster_paths.keys())}", flush=True)
+    print(f"Riverflood RPs: {sorted(riverflood_raster_paths.keys())}", flush=True)
+    print(f"Heat thresholds (C): {sorted(heat_raster_paths.keys())}", flush=True)
+    print(f"Riverflood threshold (m, >=): {args.riverflood_threshold_m}", flush=True)
+    print(f"Heat threshold (days/year, >=): {args.heat_threshold_days}", flush=True)
 
     for iso3, input_file in country_files:
         process_country(
             iso3=iso3,
             input_file=input_file,
             output_dir=output_dir,
-            raster_paths=raster_paths,
+            cyclone_raster_paths=cyclone_raster_paths,
+            riverflood_raster_paths=riverflood_raster_paths,
+            heat_raster_paths=heat_raster_paths,
+            riverflood_threshold_m=args.riverflood_threshold_m,
+            heat_threshold_days=args.heat_threshold_days,
         )
 
 

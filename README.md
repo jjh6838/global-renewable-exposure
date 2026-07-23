@@ -175,7 +175,7 @@ Main output path:
 
 - /soge-home/projects/mistral/ji/bigdata_cyclone_iris/global_maps
 
-## p2_i and p2_j: Cyclone and riverflood exposure analysis (facilities)
+## p2_i and p2_j: Cyclone, riverflood, heat, cyclonetides, and landslide exposure analysis (facilities)
 
 Script pair:
 
@@ -186,9 +186,19 @@ Purpose:
 
 - Overlay IRIS cyclone RP rasters with facilities parquet files
 - Overlay JRC riverflood RP depth rasters with facilities parquet files
+- Overlay ERA5-Land heat climatology rasters with facilities parquet files
+- Overlay ISIMIP cyclone-tide climatology raster with facilities parquet files
+- Overlay WB landslide class raster with facilities parquet files
 - Write per-country exposure parquet outputs as facilities_<ISO3>_exposure.parquet
 - Exposure threshold: wind speed >= 33 m/s
 - Riverflood threshold: depth >= 2.0 m
+- Heat threshold: climatology days/year >= 30.0 (default)
+- Cyclonetides thresholds: depth >= 0.15 m, 0.5 m, 1.5 m (15/50/150 cm)
+- Landslide class mapping:
+- exposed_landslide_low: class 2
+- exposed_landslide_med: classes 2 and 3
+- exposed_landslide_high: classes 2, 3, and 4
+- Landslide nodata: 255
 
 Output exposure columns in p2_i:
 
@@ -201,18 +211,27 @@ Output exposure columns in p2_i:
 - exposed_heat_30c
 - exposed_heat_35c
 - exposed_heat_40c
+- exposed_cyclonetides_15cm
+- exposed_cyclonetides_50cm
+- exposed_cyclonetides_150cm
+- exposed_landslide_low
+- exposed_landslide_med
+- exposed_landslide_high
 
 Key options for p2_i:
 
 - --hazard-dir PATH
 - --riverflood-dir PATH
 - --heat-dir PATH
+- --cyclonetides-raster PATH
+- --landslide-raster PATH
 - --facilities-dir PATH
 - --output-dir PATH
 - --global-output PATH (default: output_global/facilities_global_exposure.gpkg)
 - --rps 10 100 500
 - --riverflood-rps 10 100 500
 - --heat-thresholds-c 30 35 40
+- --cyclonetides-thresholds-cm 15 50 150
 - --riverflood-threshold-m 2.0
 - --heat-threshold-days 30.0
 - --iso3 ISO3 [ISO3 ...]
@@ -226,12 +245,20 @@ Default heat source in p2_i:
 
 - /soge-home/projects/mistral/ji/bigdata_heat_era5land/global_maps/climatology
 
+Default cyclonetides source in p2_i:
+
+- /soge-home/projects/mistral/ji/bigdata_cyclonetide_isimip/global_maps/cyclonetide_tidesmax_annual_stormmax_clim_mean_1995_2024.tif
+
+Default landslide source in p2_i:
+
+- /soge-home/projects/mistral/ji/bigdata_landslide_wb/global_maps/LS_TH_COG.tif
+
 Examples for p2_i:
 
 ```bash
 python p2_i_analyze_facilities_exposure.py --iso3 ABW --rps 10 100 500
 python p2_i_analyze_facilities_exposure.py --rps 10 100 500
-python p2_i_analyze_facilities_exposure.py --rps 10 100 500 --write-global
+python p2_i_analyze_facilities_exposure.py --write-global
 ```
 
 Global output when `--write-global` is enabled:
@@ -247,7 +274,7 @@ Tiered Slurm behavior in p2_j:
 - Default with no `--iso3`: submits tiered global arrays.
 - --submit-tiered: build tier country lists and submit 3 Slurm arrays
 - --iso3 ISO3: one-country direct run
-- `--heat-dir`, `--heat-thresholds-c`, and `--heat-threshold-days` are available and passed through to `p2_i`.
+- `--heat-dir`, `--heat-thresholds-c`, `--heat-threshold-days`, `--cyclonetides-raster`, `--cyclonetides-thresholds-cm`, and `--landslide-raster` are available and passed through to `p2_i`.
 - --write-global / --no-write-global are available (`--write-global` is optional).
 - Array worker mode uses --tier and --country-list-file
 
@@ -297,7 +324,7 @@ About `output_global/slurm_country_lists_facilities/`:
 - You do not need to create it manually.
 - If deleted, it will be recreated on the next p2_j tiered submission.
 
-## p2_k and p2_l: Cyclone and riverflood exposure analysis (centroids)
+## p2_k and p2_l: Cyclone, riverflood, heat, cyclonetides, and landslide exposure analysis (centroids)
 
 Script pair:
 
@@ -308,9 +335,19 @@ Purpose:
 
 - Overlay IRIS cyclone RP rasters with centroids parquet files
 - Overlay JRC riverflood RP depth rasters with centroids parquet files
+- Overlay ERA5-Land heat climatology rasters with centroids parquet files
+- Overlay ISIMIP cyclone-tide climatology raster with centroids parquet files
+- Overlay WB landslide class raster with centroids parquet files
 - Write per-country centroid exposure parquet outputs
 - Exposure threshold: wind speed >= 33 m/s
 - Riverflood threshold: depth >= 2.0 m
+- Heat threshold: climatology days/year >= 30.0 (default)
+- Cyclonetides thresholds: depth >= 0.15 m, 0.5 m, 1.5 m (15/50/150 cm)
+- Landslide class mapping:
+- exposed_landslide_low: class 2
+- exposed_landslide_med: classes 2 and 3
+- exposed_landslide_high: classes 2, 3, and 4
+- Landslide nodata: 255
 
 Output exposure columns in p2_k:
 
@@ -323,12 +360,20 @@ Output exposure columns in p2_k:
 - exposed_heat_30c
 - exposed_heat_35c
 - exposed_heat_40c
+- exposed_cyclonetides_15cm
+- exposed_cyclonetides_50cm
+- exposed_cyclonetides_150cm
+- exposed_landslide_low
+- exposed_landslide_med
+- exposed_landslide_high
 
 Default paths in p2_k:
 
 - Input centroids dir: /soge-home/projects/mistral/ji/bigdata_global_renewable_dataset_p1/2050_supply_100%_add_v2
 - Riverflood maps dir: /soge-home/projects/mistral/ji/bigdata_riverflood_jrc/global_maps
 - Heat maps dir: /soge-home/projects/mistral/ji/bigdata_heat_era5land/global_maps/climatology
+- Cyclonetides raster: /soge-home/projects/mistral/ji/bigdata_cyclonetide_isimip/global_maps/cyclonetide_tidesmax_annual_stormmax_clim_mean_1995_2024.tif
+- Landslide raster: /soge-home/projects/mistral/ji/bigdata_landslide_wb/global_maps/LS_TH_COG.tif
 - Per-country output dir: output_per_country/parquet_centroids_exposure
 - Global output: output_global/centroids_global_exposure.gpkg (layer: centroids_global_exposure)
 
@@ -343,7 +388,7 @@ Tiered Slurm behavior in p2_l:
 
 - Default with no `--iso3`: submits tiered global arrays.
 - `--iso3 ISO3`: runs a single country (RPs 10/100/500 together by default).
-- `--heat-dir`, `--heat-thresholds-c`, and `--heat-threshold-days` are available and passed through to `p2_k`.
+- `--heat-dir`, `--heat-thresholds-c`, `--heat-threshold-days`, `--cyclonetides-raster`, `--cyclonetides-thresholds-cm`, and `--landslide-raster` are available and passed through to `p2_k`.
 - `--write-global` / `--no-write-global` are available (`--write-global` is optional).
 
 Global output behavior in p2_l:
@@ -380,7 +425,7 @@ About `output_global/slurm_country_lists_centroids/`:
 - You do not need to create it manually.
 - If deleted, it will be recreated on the next tiered submission.
 
-## p2_m and p2_n: Cyclone and riverflood exposure analysis (polylines)
+## p2_m and p2_n: Cyclone, riverflood, heat, cyclonetides, and landslide exposure analysis (polylines)
 
 Script pair:
 
@@ -391,9 +436,19 @@ Purpose:
 
 - Overlay IRIS cyclone RP rasters with polyline parquet files
 - Overlay JRC riverflood RP depth rasters with polyline parquet files
+- Overlay ERA5-Land heat climatology rasters with polyline parquet files
+- Overlay ISIMIP cyclone-tide climatology raster with polyline parquet files
+- Overlay WB landslide class raster with polyline parquet files
 - Write per-country polyline exposure parquet outputs
 - Exposure threshold: wind speed >= 33 m/s
 - Riverflood threshold: depth >= 2.0 m
+- Heat threshold: climatology days/year >= 30.0 (default)
+- Cyclonetides thresholds: depth >= 0.15 m, 0.5 m, 1.5 m (15/50/150 cm)
+- Landslide class mapping:
+- exposed_landslide_low: class 2
+- exposed_landslide_med: classes 2 and 3
+- exposed_landslide_high: classes 2, 3, and 4
+- Landslide nodata: 255
 
 Output exposure columns in p2_m:
 
@@ -406,12 +461,20 @@ Output exposure columns in p2_m:
 - exposed_heat_30c
 - exposed_heat_35c
 - exposed_heat_40c
+- exposed_cyclonetides_15cm
+- exposed_cyclonetides_50cm
+- exposed_cyclonetides_150cm
+- exposed_landslide_low
+- exposed_landslide_med
+- exposed_landslide_high
 
 Default paths in p2_m:
 
 - Input polylines dir: /soge-home/projects/mistral/ji/bigdata_global_renewable_dataset_p1/2050_supply_100%_add_v2
 - Riverflood maps dir: /soge-home/projects/mistral/ji/bigdata_riverflood_jrc/global_maps
 - Heat maps dir: /soge-home/projects/mistral/ji/bigdata_heat_era5land/global_maps/climatology
+- Cyclonetides raster: /soge-home/projects/mistral/ji/bigdata_cyclonetide_isimip/global_maps/cyclonetide_tidesmax_annual_stormmax_clim_mean_1995_2024.tif
+- Landslide raster: /soge-home/projects/mistral/ji/bigdata_landslide_wb/global_maps/LS_TH_COG.tif
 - Per-country output dir: output_per_country/parquet_polylines_exposure
 - Global output: output_global/polylines_global_exposure.gpkg (layer: polylines_global_exposure)
 
@@ -419,7 +482,7 @@ Tiered Slurm behavior in p2_n:
 
 - Default with no `--iso3`: submits tiered global arrays.
 - `--iso3 ISO3`: runs a single country (RPs 10/100/500 together by default).
-- `--heat-dir`, `--heat-thresholds-c`, and `--heat-threshold-days` are available and passed through to `p2_m`.
+- `--heat-dir`, `--heat-thresholds-c`, `--heat-threshold-days`, `--cyclonetides-raster`, `--cyclonetides-thresholds-cm`, and `--landslide-raster` are available and passed through to `p2_m`.
 - `--write-global` / `--no-write-global` are available (`--write-global` is optional).
 
 Global output behavior in p2_n:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Overlay cyclone, riverflood, and heat rasters with polyline GeoParquet by country.
+"""Overlay cyclone, riverflood, heat, cyclonetides, and landslide rasters with polyline GeoParquet by country.
 
 For each polylines_{ISO3}_add_v2.parquet file, this script samples line
 geometries against IRIS RP rasters and writes country-level parquet output(s)
@@ -8,9 +8,18 @@ named polylines_{ISO3}_exposure.parquet with exposure fields:
 - exposed_cyclone_rp10
 - exposed_cyclone_rp100
 - exposed_cyclone_rp500
+- exposed_riverflood_rp10
+- exposed_riverflood_rp100
+- exposed_riverflood_rp500
 - exposed_heat_30c
 - exposed_heat_35c
 - exposed_heat_40c
+- exposed_cyclonetides_15cm
+- exposed_cyclonetides_50cm
+- exposed_cyclonetides_150cm
+- exposed_landslide_low
+- exposed_landslide_med
+- exposed_landslide_high
 
 Exposure is recorded as 1 when the maximum sampled IRIS wind speed along a
 polyline is >= 33 m/s, otherwise 0.
@@ -31,6 +40,13 @@ import rasterio
 DEFAULT_HAZARD_DIR = Path("/soge-home/projects/mistral/ji/bigdata_cyclone_iris/global_maps")
 DEFAULT_RIVERFLOOD_DIR = Path("/soge-home/projects/mistral/ji/bigdata_riverflood_jrc/global_maps")
 DEFAULT_HEAT_DIR = Path("/soge-home/projects/mistral/ji/bigdata_heat_era5land/global_maps/climatology")
+DEFAULT_CYCLONETIDES_RASTER = Path(
+    "/soge-home/projects/mistral/ji/bigdata_cyclonetide_isimip/global_maps/"
+    "cyclonetide_tidesmax_annual_stormmax_clim_mean_1995_2024.tif"
+)
+DEFAULT_LANDSLIDE_RASTER = Path(
+    "/soge-home/projects/mistral/ji/bigdata_landslide_wb/global_maps/LS_TH_COG.tif"
+)
 DEFAULT_POLYLINES_DIR = Path(
     "/soge-home/projects/mistral/ji/bigdata_global_renewable_dataset_p1/2050_supply_100%_add_v2"
 )
@@ -39,6 +55,7 @@ DEFAULT_GLOBAL_OUTPUT = Path("output_global/polylines_global_exposure.gpkg")
 DEFAULT_RPS = [10, 100, 500]
 DEFAULT_RIVERFLOOD_RPS = [10, 100, 500]
 DEFAULT_HEAT_THRESHOLDS_C = [30, 35, 40]
+DEFAULT_CYCLONETIDES_THRESHOLDS_CM = [15, 50, 150]
 WIND_EXPOSURE_THRESHOLD_MS = 33.0
 RIVERFLOOD_EXPOSURE_THRESHOLD_M = 2.0
 HEAT_EXPOSURE_THRESHOLD_DAYS = 30.0
@@ -74,6 +91,21 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=DEFAULT_HEAT_DIR,
         help="Directory containing heat_clim_mean_exceedance_*C_1995_2024.tif maps",
+    )
+    parser.add_argument(
+        "--cyclonetides-raster",
+        type=Path,
+        default=DEFAULT_CYCLONETIDES_RASTER,
+        help=(
+            "Single cyclone-tide depth map in meters "
+            "(e.g., cyclonetide_tidesmax_annual_stormmax_clim_mean_1995_2024.tif)"
+        ),
+    )
+    parser.add_argument(
+        "--landslide-raster",
+        type=Path,
+        default=DEFAULT_LANDSLIDE_RASTER,
+        help="Single landslide class raster (e.g., LS_TH_COG.tif)",
     )
     parser.add_argument(
         "--output-dir",
@@ -119,6 +151,13 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=HEAT_EXPOSURE_THRESHOLD_DAYS,
         help="Exposure threshold for climatological heat exceedance days/year (greater-than-or-equal)",
+    )
+    parser.add_argument(
+        "--cyclonetides-thresholds-cm",
+        type=int,
+        nargs="+",
+        default=DEFAULT_CYCLONETIDES_THRESHOLDS_CM,
+        help="Cyclone-tide depth thresholds in centimeters to evaluate (space-separated)",
     )
     parser.add_argument(
         "--iso3",
@@ -372,6 +411,91 @@ def sample_heat_exposure_for_threshold(
         return result
 
 
+def sample_cyclonetides_exposure_for_threshold(
+    gdf: gpd.GeoDataFrame,
+    raster_path: Path,
+    threshold_m: float,
+) -> np.ndarray:
+    with rasterio.open(raster_path) as src:
+        if gdf.crs is None:
+            raise ValueError("Input polyline data has no CRS metadata")
+
+        gdf_in_raster_crs = gdf.to_crs(src.crs)
+        result = np.zeros(len(gdf_in_raster_crs), dtype=np.uint8)
+
+        for idx, geom in enumerate(gdf_in_raster_crs.geometry):
+            if geom is None or geom.is_empty:
+                continue
+
+            coords = _coords_for_geometry(geom)
+            if not coords:
+                continue
+
+            sampled = np.array([row[0] for row in src.sample(coords)], dtype=np.float32)
+            max_value = _max_valid_sample_value(sampled, src.nodata)
+
+            if not np.isnan(max_value) and max_value >= threshold_m:
+                result[idx] = 1
+
+        return result
+
+
+def _has_landslide_class(
+    sampled_values: np.ndarray,
+    nodata: float | int | None,
+    classes: set[int],
+) -> bool:
+    if sampled_values.size == 0:
+        return False
+
+    valid = ~np.isnan(sampled_values)
+    nodata_values = {255.0}
+    if nodata is not None and not (isinstance(nodata, float) and np.isnan(nodata)):
+        nodata_values.add(float(nodata))
+
+    for nodata_value in nodata_values:
+        valid &= sampled_values != nodata_value
+
+    if not valid.any():
+        return False
+
+    valid_int = sampled_values[valid].astype(np.int32)
+    return bool(np.isin(valid_int, list(classes)).any())
+
+
+def sample_landslide_exposure(
+    gdf: gpd.GeoDataFrame,
+    raster_path: Path,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    with rasterio.open(raster_path) as src:
+        if gdf.crs is None:
+            raise ValueError("Input polyline data has no CRS metadata")
+
+        gdf_in_raster_crs = gdf.to_crs(src.crs)
+        low = np.zeros(len(gdf_in_raster_crs), dtype=np.uint8)
+        med = np.zeros(len(gdf_in_raster_crs), dtype=np.uint8)
+        high = np.zeros(len(gdf_in_raster_crs), dtype=np.uint8)
+
+        for idx, geom in enumerate(gdf_in_raster_crs.geometry):
+            if geom is None or geom.is_empty:
+                continue
+
+            coords = _coords_for_geometry(geom)
+            if not coords:
+                continue
+
+            sampled = np.array([row[0] for row in src.sample(coords)], dtype=np.float32)
+
+            if _has_landslide_class(sampled, src.nodata, {2}):
+                low[idx] = 1
+            if _has_landslide_class(sampled, src.nodata, {2, 3}):
+                med[idx] = 1
+            if _has_landslide_class(sampled, src.nodata, {2, 3, 4}):
+                high[idx] = 1
+
+        return low, med, high
+
+
 def process_country(
     iso3: str,
     input_file: Path,
@@ -379,6 +503,9 @@ def process_country(
     cyclone_raster_paths: dict[int, Path],
     riverflood_raster_paths: dict[int, Path],
     heat_raster_paths: dict[int, Path],
+    cyclonetides_raster_path: Path,
+    landslide_raster_path: Path,
+    cyclonetides_thresholds_cm: list[int],
     riverflood_threshold_m: float,
     heat_threshold_days: float,
 ) -> gpd.GeoDataFrame:
@@ -415,6 +542,21 @@ def process_country(
             threshold_days=heat_threshold_days,
         )
         exposure_cols.append(col)
+
+    for threshold_cm in cyclonetides_thresholds_cm:
+        col = f"exposed_cyclonetides_{threshold_cm}cm"
+        gdf[col] = sample_cyclonetides_exposure_for_threshold(
+            gdf,
+            cyclonetides_raster_path,
+            threshold_m=float(threshold_cm) / 100.0,
+        )
+        exposure_cols.append(col)
+
+    landslide_low, landslide_med, landslide_high = sample_landslide_exposure(gdf, landslide_raster_path)
+    gdf["exposed_landslide_low"] = landslide_low
+    gdf["exposed_landslide_med"] = landslide_med
+    gdf["exposed_landslide_high"] = landslide_high
+    exposure_cols.extend(["exposed_landslide_low", "exposed_landslide_med", "exposed_landslide_high"])
 
     output_dir.mkdir(parents=True, exist_ok=True)
     out_file = output_dir / f"polylines_{iso3}_exposure.parquet"
@@ -471,7 +613,14 @@ def main() -> None:
     hazard_dir = resolve_path(script_dir, args.hazard_dir)
     riverflood_dir = resolve_path(script_dir, args.riverflood_dir)
     heat_dir = resolve_path(script_dir, args.heat_dir)
+    cyclonetides_raster_path = resolve_path(script_dir, args.cyclonetides_raster)
+    landslide_raster_path = resolve_path(script_dir, args.landslide_raster)
     polylines_dir = resolve_path(script_dir, args.polylines_dir)
+
+    if not cyclonetides_raster_path.exists():
+        raise FileNotFoundError(f"Missing cyclone-tide raster: {cyclonetides_raster_path}")
+    if not landslide_raster_path.exists():
+        raise FileNotFoundError(f"Missing landslide raster: {landslide_raster_path}")
 
     iso3_filter = None if args.iso3 is None else {c.upper() for c in args.iso3}
 
@@ -483,11 +632,14 @@ def main() -> None:
     print(f"Hazard directory: {hazard_dir}", flush=True)
     print(f"Riverflood directory: {riverflood_dir}", flush=True)
     print(f"Heat directory: {heat_dir}", flush=True)
+    print(f"Cyclonetides raster: {cyclonetides_raster_path}", flush=True)
+    print(f"Landslide raster: {landslide_raster_path}", flush=True)
     print(f"Polylines directory: {polylines_dir}", flush=True)
     print(f"Countries to process: {len(country_files)}", flush=True)
     print(f"Cyclone RPs: {sorted(cyclone_raster_paths.keys())}", flush=True)
     print(f"Riverflood RPs: {sorted(riverflood_raster_paths.keys())}", flush=True)
     print(f"Heat thresholds (C): {sorted(heat_raster_paths.keys())}", flush=True)
+    print(f"Cyclonetides thresholds (cm): {sorted(args.cyclonetides_thresholds_cm)}", flush=True)
     print(f"Riverflood threshold (m, >=): {args.riverflood_threshold_m}", flush=True)
     print(f"Heat threshold (days/year, >=): {args.heat_threshold_days}", flush=True)
 
@@ -499,6 +651,9 @@ def main() -> None:
             cyclone_raster_paths=cyclone_raster_paths,
             riverflood_raster_paths=riverflood_raster_paths,
             heat_raster_paths=heat_raster_paths,
+            cyclonetides_raster_path=cyclonetides_raster_path,
+            landslide_raster_path=landslide_raster_path,
+            cyclonetides_thresholds_cm=args.cyclonetides_thresholds_cm,
             riverflood_threshold_m=args.riverflood_threshold_m,
             heat_threshold_days=args.heat_threshold_days,
         )
